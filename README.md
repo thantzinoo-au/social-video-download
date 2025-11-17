@@ -365,7 +365,6 @@ curl http://localhost:5001/disk-usage \
 For issues, questions, or contributions:
 
 - Open an issue on GitHub
-- Contact: [your-email@example.com]
 
 ## 🔄 Updates
 
