@@ -139,8 +139,9 @@ def require_admin(f):
     return decorated_function
 
 
-def get_user_directory(user_id: str) -> str:
-    safe_user_id = sanitize_user_id(user_id)
+def get_user_directory(user_id: int) -> str:
+    """Get or create the user's download directory based on their user ID."""
+    safe_user_id = str(user_id)
     user_dir = os.path.join(DOWNLOAD_DIR, safe_user_id)
     ensure_directory_exists(user_dir)
     return user_dir
@@ -406,14 +407,16 @@ def download_video():
     if not is_valid:
         return jsonify({"error": error_msg}), 400
 
-    user_id = data.get("userId") or data.get("userName") or "anonymous"
+    # Use authenticated user's ID for directory creation
+    user_id = request.user["id"]
     user_dir = get_user_directory(user_id)
 
     output_format = data.get("format", DEFAULT_FORMAT)
     request_id = str(uuid.uuid4())
 
     logger.info(
-        f"Download request - URL: {video_url}, Format: {output_format}, " f"User: {user_id}, RequestID: {request_id}"
+        f"Download request - URL: {video_url}, Format: {output_format}, "
+        f"User: {request.user['username']} (ID: {user_id}), RequestID: {request_id}"
     )
 
     try:
@@ -513,7 +516,7 @@ def download_video():
                 "file_path": relative_path,
                 "duration": video_info.get("duration"),
                 "download_path": f"/files/{relative_path}",
-                "metadata_path": f"/files/{sanitize_user_id(user_id)}/{filename_base}_metadata.json",
+                "metadata_path": f"/files/{user_id}/{filename_base}_metadata.json",
             }
         )
 
@@ -541,10 +544,12 @@ def get_file(file_path):
     return send_file(full_path, as_attachment=True)
 
 
-@app.route("/list-files/<path:user_id>", methods=["GET"])
+@app.route("/list-files", methods=["GET"])
 @limiter.limit("30 per minute")
 @require_api_key
-def list_user_files(user_id):
+def list_user_files():
+    # Use authenticated user's ID
+    user_id = request.user["id"]
     user_dir = get_user_directory(user_id)
 
     if not os.path.exists(user_dir):

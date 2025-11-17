@@ -33,9 +33,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create downloads directory and set permissions
+# Create downloads directory with proper permissions
 RUN mkdir -p /downloads && \
-    chown -R appuser:appuser /app /downloads
+    chmod 777 /downloads && \
+    chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
