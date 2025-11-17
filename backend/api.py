@@ -128,6 +128,38 @@ def require_session(f):
     return decorated_function
 
 
+def require_auth(f):
+    """Decorator that accepts both session tokens and API keys"""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Try session token first
+        session_token = request.headers.get("X-Session-Token")
+        if session_token:
+            user = auth_manager.validate_session(session_token)
+            if user:
+                request.user = user
+                return f(*args, **kwargs)
+
+        # Try API key
+        api_key = request.headers.get(SECRET_HEADER_NAME)
+
+        if api_key == API_SECRET_KEY:
+            request.user = {"id": 0, "username": "legacy", "role": "admin"}
+            return f(*args, **kwargs)
+
+        if api_key:
+            user = auth_manager.validate_api_key(api_key)
+            if user:
+                request.user = user
+                return f(*args, **kwargs)
+
+        logger.warning(f"Unauthorized access attempt from {request.remote_addr} to {request.endpoint}")
+        return jsonify({"error": "Unauthorized access"}), 401
+
+    return decorated_function
+
+
 def require_admin(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -139,12 +171,10 @@ def require_admin(f):
     return decorated_function
 
 
-def get_user_directory(user_id: int) -> str:
-    """Get or create the user's download directory based on their user ID."""
-    safe_user_id = str(user_id)
-    user_dir = os.path.join(DOWNLOAD_DIR, safe_user_id)
-    ensure_directory_exists(user_dir)
-    return user_dir
+def get_user_directory(user_id: str) -> str:
+    """Get the general download directory (no longer user-specific)."""
+    # All files now go to a single downloads directory
+    return DOWNLOAD_DIR
 
 
 def execute_ytdlp_command(cmd: list) -> Tuple[bool, str, str]:
@@ -391,9 +421,46 @@ def revoke_my_api_key(key_id):
     return jsonify({"success": False, "error": message}), 400
 
 
+@app.route("/user/api-key-status", methods=["GET"])
+@limiter.limit("60 per minute")
+@require_session
+def check_api_key_status():
+    """Check if the current user has an active API key."""
+    user_id = request.user["id"]
+
+    conn = None
+    try:
+        conn = auth_manager._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """SELECT COUNT(*) FROM api_keys 
+               WHERE user_id = %s AND is_active = TRUE 
+               AND (expires_at IS NULL OR expires_at > NOW())""",
+            (user_id,),
+        )
+        active_key_count = cursor.fetchone()[0]
+
+        has_api_key = active_key_count > 0
+
+        return jsonify(
+            {
+                "success": True,
+                "has_api_key": has_api_key,
+                "is_active": has_api_key,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error checking API key status: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            auth_manager._put_connection(conn)
+
+
 @app.route("/download", methods=["POST"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def download_video():
     data = request.json
     if not data:
@@ -441,8 +508,10 @@ def download_video():
 
         original_title = video_info.get("title", "video")
         video_id = video_info.get("id", "unknown")
-        filename_base = create_safe_filename(original_title, video_id)
-        filename_template = f"{user_dir}/{filename_base}.%(ext)s"
+
+        # Generate UUID4 for stored filename
+        stored_filename = str(uuid.uuid4())
+        filename_template = f"{user_dir}/{stored_filename}.%(ext)s"
 
         download_cmd = [
             "yt-dlp",
@@ -465,46 +534,52 @@ def download_video():
             logger.error(f"Download failed: {stderr}")
             return jsonify({"success": False, "error": f"Download failed: {stderr}"}), 500
 
-        filename_cmd = [
-            "yt-dlp",
-            "-f",
-            output_format,
-            "-o",
-            filename_template,
-            "--no-playlist",
-            "--print",
-            "filename",
-            video_url,
-        ]
-        success, filename_stdout, _ = execute_ytdlp_command(filename_cmd)
+        # Get actual downloaded file path
+        actual_file_path = f"{user_dir}/{stored_filename}.mp4"
 
-        if success and filename_stdout:
-            actual_filename = filename_stdout.strip()
-            relative_path = os.path.relpath(actual_filename, DOWNLOAD_DIR)
-        else:
-            relative_path = f"{sanitize_user_id(user_id)}/{filename_base}.mp4"
+        # Get file size
+        file_size = 0
+        if os.path.exists(actual_file_path):
+            file_size = os.path.getsize(actual_file_path)
 
-        logger.info(f"Video downloaded successfully: {relative_path}")
+        # Create original filename from title
+        safe_title = create_safe_filename(original_title, video_id)
+        original_filename = f"{safe_title}.mp4"
 
-        metadata = {
-            "original_title": original_title,
-            "video_id": video_info.get("id"),
-            "uploader": video_info.get("uploader"),
-            "upload_date": video_info.get("upload_date"),
-            "duration": video_info.get("duration"),
-            "description": video_info.get("description", "")[:500],
-            "download_date": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "url": video_url,
-            "format": output_format,
-            "request_id": request_id,
-        }
-
-        metadata_file = os.path.join(user_dir, f"{filename_base}_metadata.json")
+        # Insert into database
+        conn = None
         try:
-            with open(metadata_file, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            conn = auth_manager._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO downloaded_files 
+                   (user_id, original_filename, stored_filename, file_path, file_size, 
+                    mime_type, video_title, video_url)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING id""",
+                (
+                    user_id,
+                    original_filename,
+                    f"{stored_filename}.mp4",
+                    actual_file_path,
+                    file_size,
+                    "video/mp4",
+                    original_title,
+                    video_url,
+                ),
+            )
+            file_record_id = cursor.fetchone()[0]
+            conn.commit()
+            logger.info(f"Saved file record to database: {file_record_id}")
         except Exception as e:
-            logger.warning(f"Failed to save metadata: {e}")
+            if conn:
+                conn.rollback()
+            logger.error(f"Error saving file to database: {e}")
+        finally:
+            if conn:
+                auth_manager._put_connection(conn)
+
+        logger.info(f"Video downloaded successfully: {stored_filename}.mp4")
 
         return jsonify(
             {
@@ -513,10 +588,9 @@ def download_video():
                 "user_id": user_id,
                 "video_id": video_info.get("id"),
                 "title": original_title,
-                "file_path": relative_path,
+                "file_path": f"{stored_filename}.mp4",
                 "duration": video_info.get("duration"),
-                "download_path": f"/files/{relative_path}",
-                "metadata_path": f"/files/{user_id}/{filename_base}_metadata.json",
+                "download_path": f"/files/{stored_filename}.mp4",
             }
         )
 
@@ -527,7 +601,7 @@ def download_video():
 
 @app.route("/files/<path:file_path>", methods=["GET"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def get_file(file_path):
     full_path = os.path.join(DOWNLOAD_DIR, file_path)
 
@@ -546,84 +620,109 @@ def get_file(file_path):
 
 @app.route("/list-files", methods=["GET"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def list_user_files():
     # Use authenticated user's ID
     user_id = request.user["id"]
-    user_dir = get_user_directory(user_id)
 
-    if not os.path.exists(user_dir):
-        return jsonify({"success": True, "user_id": user_id, "files": []})
-
-    result = []
+    conn = None
     try:
-        for root, _, files in os.walk(user_dir):
-            for file in files:
-                full_path = os.path.join(root, file)
-                relative_path = os.path.relpath(full_path, DOWNLOAD_DIR)
-                stats = get_file_stats(full_path)
+        conn = auth_manager._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, original_filename, stored_filename, file_path, file_size, 
+                      created_at, video_title, video_url
+               FROM downloaded_files 
+               WHERE user_id = %s 
+               ORDER BY created_at DESC""",
+            (user_id,),
+        )
+        files = cursor.fetchall()
 
-                if stats:
-                    result.append(
-                        {
-                            "name": file,
-                            "path": relative_path,
-                            "size": stats["size"],
-                            "modified": stats["modified"],
-                            "download_path": f"/files/{relative_path}",
-                        }
-                    )
+        result = []
+        for file in files:
+            file_id, original_filename, stored_filename, file_path, file_size, created_at, video_title, video_url = file
+
+            # Convert created_at to timestamp
+            modified_timestamp = created_at.timestamp() if created_at else 0
+
+            result.append(
+                {
+                    "id": str(file_id),
+                    "name": original_filename,
+                    "path": stored_filename,
+                    "size": file_size,
+                    "modified": modified_timestamp,
+                    "download_path": f"/files/{stored_filename}",
+                    "title": video_title,
+                }
+            )
+
+        return jsonify({"success": True, "user_id": str(user_id), "files": result, "count": len(result)})
     except Exception as e:
         logger.error(f"Error listing files for user {user_id}: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-    result.sort(key=lambda x: x["modified"], reverse=True)
-
-    return jsonify({"success": True, "user_id": user_id, "files": result, "count": len(result)})
+    finally:
+        if conn:
+            auth_manager._put_connection(conn)
 
 
 @app.route("/delete-file", methods=["DELETE"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def delete_file():
     data = request.json
     if not data or "file_path" not in data:
         return jsonify({"error": "file_path is required"}), 400
 
     file_path = data["file_path"]
-    full_path = os.path.join(DOWNLOAD_DIR, file_path)
+    user_id = request.user["id"]
 
-    real_download_dir = os.path.realpath(DOWNLOAD_DIR)
-    real_file_path = os.path.realpath(full_path)
-
-    if not real_file_path.startswith(real_download_dir):
-        logger.warning(f"Path traversal attempt in delete: {file_path}")
-        return jsonify({"error": "Invalid file path"}), 403
-
-    if not os.path.exists(full_path):
-        return jsonify({"error": "File not found"}), 404
-
+    conn = None
     try:
-        os.remove(full_path)
-        logger.info(f"Deleted file: {full_path}")
+        conn = auth_manager._get_connection()
+        cursor = conn.cursor()
 
-        parent_dir = os.path.dirname(full_path)
-        try:
-            if not os.listdir(parent_dir) and parent_dir != DOWNLOAD_DIR:
-                os.rmdir(parent_dir)
-                logger.info(f"Removed empty directory: {parent_dir}")
-        except (OSError, PermissionError):
-            pass
+        # Get file record from database
+        cursor.execute(
+            """SELECT id, stored_filename, file_path 
+               FROM downloaded_files 
+               WHERE user_id = %s AND stored_filename = %s""",
+            (user_id, file_path),
+        )
+        file_record = cursor.fetchone()
+
+        if not file_record:
+            return jsonify({"error": "File not found or unauthorized"}), 404
+
+        file_id, stored_filename, actual_file_path = file_record
+
+        # Delete from database
+        cursor.execute("DELETE FROM downloaded_files WHERE id = %s", (file_id,))
+        conn.commit()
+
+        # Delete physical file
+        if os.path.exists(actual_file_path):
+            try:
+                os.remove(actual_file_path)
+                logger.info(f"Deleted file: {actual_file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete physical file {actual_file_path}: {e}")
 
         return jsonify({"success": True, "message": "File deleted successfully"})
     except Exception as e:
+        if conn:
+            conn.rollback()
         logger.exception(f"Error deleting file: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            auth_manager._put_connection(conn)
 
 
 @app.route("/formats", methods=["POST"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def list_formats():
     data = request.json
     if not data or "url" not in data:
@@ -661,7 +760,7 @@ def list_formats():
 
 @app.route("/disk-usage", methods=["GET"])
 @limiter.limit("30 per minute")
-@require_api_key
+@require_auth
 def get_disk_usage():
     try:
         usage = shutil.disk_usage(DOWNLOAD_DIR)

@@ -1,27 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import PropTypes from 'prop-types'
 import './FileList.css'
-import { FiRefreshCw, FiTrash2, FiFile, FiAlertCircle } from 'react-icons/fi'
-import { listFiles, deleteFile } from '../services/api'
+import { FiRefreshCw, FiTrash2, FiFile, FiAlertCircle, FiDownload } from 'react-icons/fi'
+import { listFiles, deleteFile, downloadFile } from '../services/api'
 import { formatFileSize, formatDate } from '../utils/constants'
 
-function FileList({ apiKey, userId }) {
+function FileList() {
   const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [downloading, setDownloading] = useState(null)
 
   const loadFiles = useCallback(async () => {
-    if (!apiKey) {
-      setError('Please set your API key in Settings')
-      return
-    }
-
     setLoading(true)
     setError(null)
 
     try {
-      const response = await listFiles(userId)
+      const response = await listFiles()
 
       if (response.success && response.data.success) {
         setFiles(response.data.files || [])
@@ -33,7 +28,7 @@ function FileList({ apiKey, userId }) {
     } finally {
       setLoading(false)
     }
-  }, [apiKey, userId])
+  }, [])
 
   const handleDeleteFile = async (filePath) => {
     if (!window.confirm('Are you sure you want to delete this file?')) {
@@ -57,11 +52,21 @@ function FileList({ apiKey, userId }) {
     }
   }
 
-  useEffect(() => {
-    if (apiKey && userId) {
-      loadFiles()
+  const handleDownloadFile = async (file) => {
+    setDownloading(file.path)
+
+    try {
+      await downloadFile(file.path, file.name)
+    } catch (err) {
+      alert(`Failed to download file: ${err.message}`)
+    } finally {
+      setDownloading(null)
     }
-  }, [apiKey, userId, loadFiles])
+  }
+
+  useEffect(() => {
+    loadFiles()
+  }, [loadFiles])
 
   const getFileIcon = (filename) => {
     if (filename.endsWith('.json')) return '📄'
@@ -74,7 +79,7 @@ function FileList({ apiKey, userId }) {
     <div className="file-list">
       <div className="file-list-header">
         <h2>My Downloads</h2>
-        <button onClick={loadFiles} disabled={loading || !apiKey} className="refresh-btn">
+        <button onClick={loadFiles} disabled={loading} className="refresh-btn">
           <FiRefreshCw className={loading ? 'spin' : ''} /> Refresh
         </button>
       </div>
@@ -113,6 +118,18 @@ function FileList({ apiKey, userId }) {
               </div>
               <div className="file-actions">
                 <button
+                  className="action-btn download-btn"
+                  onClick={() => handleDownloadFile(file)}
+                  disabled={downloading === file.path}
+                  title="Download to device"
+                >
+                  {downloading === file.path ? (
+                    <FiRefreshCw className="spin" />
+                  ) : (
+                    <FiDownload />
+                  )}
+                </button>
+                <button
                   className="action-btn delete-btn"
                   onClick={() => handleDeleteFile(file.path)}
                   disabled={deleting === file.path}
@@ -131,11 +148,6 @@ function FileList({ apiKey, userId }) {
       )}
     </div>
   )
-}
-
-FileList.propTypes = {
-  apiKey: PropTypes.string.isRequired,
-  userId: PropTypes.string.isRequired,
 }
 
 export default FileList

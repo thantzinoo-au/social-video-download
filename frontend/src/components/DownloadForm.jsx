@@ -1,26 +1,39 @@
 import React, { useState, useEffect } from 'react'
-import PropTypes from 'prop-types'
 import './DownloadForm.css'
 import { FiDownload, FiLoader, FiCheckCircle, FiAlertCircle } from 'react-icons/fi'
-import { downloadVideo } from '../services/api'
+import { downloadVideo, checkApiKeyStatus } from '../services/api'
 import { isValidUrl, formatDuration, SUPPORTED_PLATFORMS, FILE_SIZE } from '../utils/constants'
 
-function DownloadForm({ apiKey, userId }) {
+function DownloadForm() {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [hasApiKey, setHasApiKey] = useState(true)
+  const [checkingApiKey, setCheckingApiKey] = useState(true)
 
   useEffect(() => {
-    setResult(null)
-    setError(null)
-  }, [userId])
+    const checkApiKey = async () => {
+      setCheckingApiKey(true)
+      const response = await checkApiKeyStatus()
+      
+      if (response.success && response.data.success) {
+        setHasApiKey(response.data.has_api_key)
+      } else {
+        setHasApiKey(false)
+      }
+      
+      setCheckingApiKey(false)
+    }
+    
+    checkApiKey()
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     
-    if (!apiKey) {
-      setError('Please set your API key in Settings')
+    if (!hasApiKey) {
+      setError('API key is not ready. Please contact admin.')
       return
     }
 
@@ -39,7 +52,7 @@ function DownloadForm({ apiKey, userId }) {
     setResult(null)
 
     try {
-      const response = await downloadVideo(url, userId)
+      const response = await downloadVideo(url)
 
       if (response.success && response.data.success) {
         setResult(response.data)
@@ -62,6 +75,18 @@ function DownloadForm({ apiKey, userId }) {
 
   return (
     <div className="download-form">
+      {checkingApiKey ? (
+        <div className="alert alert-info">
+          <FiLoader className="spin" />
+          <span>Checking API key status...</span>
+        </div>
+      ) : !hasApiKey ? (
+        <div className="alert alert-error">
+          <FiAlertCircle />
+          <span>API key is not ready. Please contact admin to assign an API key. You cannot download yet.</span>
+        </div>
+      ) : null}
+
       <form onSubmit={handleSubmit}>
         <div className="form-group">
           <label htmlFor="url">Video URL</label>
@@ -71,13 +96,13 @@ function DownloadForm({ apiKey, userId }) {
             value={url}
             onChange={handleUrlChange}
             placeholder="Paste video URL here..."
-            disabled={loading}
+            disabled={loading || !hasApiKey}
             className="url-input"
             autoComplete="off"
           />
         </div>
 
-        <button type="submit" disabled={loading || !apiKey || !url} className="download-btn">
+        <button type="submit" disabled={loading || !hasApiKey || !url} className="download-btn">
           {loading ? (
             <>
               <FiLoader className="spin" /> Downloading...
@@ -127,11 +152,6 @@ function DownloadForm({ apiKey, userId }) {
       </div>
     </div>
   )
-}
-
-DownloadForm.propTypes = {
-  apiKey: PropTypes.string.isRequired,
-  userId: PropTypes.string.isRequired,
 }
 
 export default DownloadForm

@@ -87,11 +87,11 @@ export const verifySession = async () => {
   }
 }
 
-export const downloadVideo = async (url, userId, format = 'bestvideo+bestaudio/best') => {
+export const downloadVideo = async (url, format = 'bestvideo+bestaudio/best') => {
   try {
     const response = await apiClient.post(
       '/download',
-      { url, userId, format },
+      { url, format },
       { timeout: DOWNLOAD_TIMEOUT }
     )
     return { success: true, data: response.data }
@@ -100,9 +100,9 @@ export const downloadVideo = async (url, userId, format = 'bestvideo+bestaudio/b
   }
 }
 
-export const listFiles = async (userId) => {
+export const listFiles = async () => {
   try {
-    const response = await apiClient.get(`/list-files/${userId}`)
+    const response = await apiClient.get('/list-files')
     return { success: true, data: response.data }
   } catch (error) {
     return handleError(error)
@@ -117,6 +117,37 @@ export const deleteFile = async (filePath) => {
     return { success: true, data: response.data }
   } catch (error) {
     return handleError(error)
+  }
+}
+
+export const downloadFile = async (filePath, originalFilename) => {
+  try {
+    const sessionToken = apiClient.defaults.headers.common['X-Session-Token']
+    
+    const response = await fetch(`${API_BASE_URL}/files/${filePath}`, {
+      method: 'GET',
+      headers: {
+        'X-Session-Token': sessionToken
+      }
+    })
+
+    if (!response.ok) {
+      throw new Error('Download failed')
+    }
+
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = originalFilename || filePath
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+
+    return { success: true }
+  } catch (error) {
+    throw error
   }
 }
 
@@ -138,33 +169,37 @@ export const getDiskUsage = async () => {
   }
 }
 
-export const downloadFileToDevice = (filePath, apiKey) => {
+export const checkApiKeyStatus = async () => {
+  try {
+    const response = await apiClient.get('/user/api-key-status')
+    return { success: true, data: response.data }
+  } catch (error) {
+    return handleError(error)
+  }
+}
+
+export const downloadFileToDevice = (filePath) => {
   const url = `${API_BASE_URL}/files/${filePath}`
   const link = document.createElement('a')
   link.href = url
   link.setAttribute('download', '')
   
-  if (apiKey) {
-    fetch(url, {
-      headers: { 'X-API-Key': apiKey }
+  // Fetch with credentials to include session token from axios defaults
+  fetch(url, {
+    credentials: 'include'
+  })
+    .then(response => response.blob())
+    .then(blob => {
+      const blobUrl = window.URL.createObjectURL(blob)
+      link.href = blobUrl
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(blobUrl)
     })
-      .then(response => response.blob())
-      .then(blob => {
-        const blobUrl = window.URL.createObjectURL(blob)
-        link.href = blobUrl
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        window.URL.revokeObjectURL(blobUrl)
-      })
-      .catch(error => {
-        console.error('Download failed:', error)
-      })
-  } else {
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
+    .catch(error => {
+      console.error('Download failed:', error)
+    })
 }
 
 export default {
@@ -177,7 +212,7 @@ export default {
   downloadVideo,
   listFiles,
   deleteFile,
+  downloadFile,
   getFormats,
   getDiskUsage,
-  downloadFileToDevice,
 }

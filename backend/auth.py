@@ -4,6 +4,7 @@ from psycopg2.extras import RealDictCursor
 import secrets
 import hashlib
 import os
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 import logging
@@ -60,10 +61,13 @@ class AuthManager:
             conn = self._get_connection()
             cursor = conn.cursor()
 
+            # Enable uuid extension
+            cursor.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                     username VARCHAR(255) UNIQUE NOT NULL,
                     password_hash VARCHAR(255) NOT NULL,
                     role VARCHAR(50) NOT NULL DEFAULT 'user',
@@ -77,7 +81,7 @@ class AuthManager:
                 """
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id UUID NOT NULL,
                     api_key VARCHAR(255) UNIQUE NOT NULL,
                     description TEXT,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,7 +96,7 @@ class AuthManager:
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
+                    user_id UUID NOT NULL,
                     session_token VARCHAR(255) UNIQUE NOT NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     expires_at TIMESTAMP NOT NULL,
@@ -102,10 +106,30 @@ class AuthManager:
             """
             )
 
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS downloaded_files (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    user_id UUID NOT NULL,
+                    original_filename VARCHAR(500) NOT NULL,
+                    stored_filename VARCHAR(255) NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_size BIGINT NOT NULL DEFAULT 0,
+                    mime_type VARCHAR(100),
+                    video_title TEXT,
+                    video_url TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            """
+            )
+
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_api_key ON api_keys(api_key)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_downloaded_files_user_id ON downloaded_files(user_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_downloaded_files_created_at ON downloaded_files(created_at)")
 
             conn.commit()
             logger.info("Database initialized successfully")

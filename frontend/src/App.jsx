@@ -1,22 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import DownloadForm from './components/DownloadForm'
 import FileList from './components/FileList'
-import Settings from './components/Settings'
 import Login from './components/Login'
 import AdminDashboard from './components/AdminDashboard'
 import './App.css'
-import { FiDownload, FiSettings, FiList } from 'react-icons/fi'
-import { setApiKey, setSessionToken, verifySession } from './services/api'
-import { STORAGE_KEYS, DEFAULTS } from './utils/constants'
+import { FiDownload, FiList } from 'react-icons/fi'
+import { setSessionToken, verifySession } from './services/api'
 
 function App() {
   const [activeTab, setActiveTab] = useState('download')
-  const [apiKey, setApiKeyState] = useState(
-    localStorage.getItem(STORAGE_KEYS.API_KEY) || DEFAULTS.API_KEY
-  )
-  const [userId, setUserIdState] = useState(
-    localStorage.getItem(STORAGE_KEYS.USER_ID) || DEFAULTS.USER_ID
-  )
   
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [sessionToken, setSessionTokenState] = useState(
@@ -50,12 +42,6 @@ function App() {
     checkSession()
   }, [])
 
-  useEffect(() => {
-    if (apiKey) {
-      setApiKey(apiKey)
-    }
-  }, [apiKey])
-
   const handleLoginSuccess = (token, userData) => {
     setSessionTokenState(token)
     setSessionToken(token)
@@ -70,17 +56,6 @@ function App() {
     setIsAuthenticated(false)
     localStorage.removeItem('session_token')
     localStorage.removeItem('user')
-  }
-
-  const handleApiKeyChange = (key) => {
-    setApiKeyState(key)
-    localStorage.setItem(STORAGE_KEYS.API_KEY, key)
-    setApiKey(key) // Update API service
-  }
-
-  const handleUserIdChange = (id) => {
-    setUserIdState(id)
-    localStorage.setItem(STORAGE_KEYS.USER_ID, id)
   }
 
   if (isVerifying) {
@@ -136,25 +111,11 @@ function App() {
           >
             <FiList /> My Files
           </button>
-          <button
-            className={`tab ${activeTab === 'settings' ? 'active' : ''}`}
-            onClick={() => setActiveTab('settings')}
-          >
-            <FiSettings /> Settings
-          </button>
         </nav>
 
         <main className="content">
-          {activeTab === 'download' && <DownloadForm apiKey={apiKey} userId={userId} />}
-          {activeTab === 'files' && <FileList apiKey={apiKey} userId={userId} />}
-          {activeTab === 'settings' && (
-            <Settings
-              apiKey={apiKey}
-              userId={userId}
-              onApiKeyChange={handleApiKeyChange}
-              onUserIdChange={handleUserIdChange}
-            />
-          )}
+          {activeTab === 'download' && <DownloadForm />}
+          {activeTab === 'files' && <FileList />}
         </main>
       </div>
     </div>
